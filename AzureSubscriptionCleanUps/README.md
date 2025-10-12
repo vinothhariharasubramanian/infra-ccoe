@@ -35,4 +35,18 @@ Tools to identify and clean up unused Azure resources for cost optimization.
 3. Run `3-Process-AllBatches.ps1` to analyze activity logs for all resources
 4. Review output CSV for resources with no recent activity
 
-**Output**: CSV file with last activity timestamps for each resource. Download the file and analyze the usage patterns
+**Output**: CSV file with last activity timestamps for each resource
+
+## Reports and Documentation
+
+**EMT DevTest - CleanUp.docx**:
+- Comprehensive cleanup documentation for EMT DevTest subscription
+- Risk assessments and clean up recommendations
+
+**Report Contents**:
+- Resource Graph query results with cleanup candidates
+- Activity logs showing resource access patterns
+
+## Usage Notes
+- Resource Graph queries provide immediate cleanup candidates
+- Review EMT DevTest document for detailed cleanup strategy
