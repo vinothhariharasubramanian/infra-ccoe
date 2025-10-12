@@ -1,0 +1,11 @@
+resources
+| where type =~ "microsoft.network/virtualnetworks"
+| extend subnet = properties.subnets
+| mv-expand subnet
+| extend ipConfigurations = subnet.properties.ipConfigurations
+| extend delegations = subnet.properties.delegations
+| extend applicationGatewayIPConfigurations = subnet.properties.applicationGatewayIPConfigurations
+| where isnull(ipConfigurations) and delegations == "[]" and isnull(applicationGatewayIPConfigurations) 
+| extend SubnetName = subnet.name, SubnetId = subnet.id
+| extend Details = pack_all()
+| project VNetName = name, SubnetName, ResourceGroup = resourceGroup, ResourceType = type, Location = location, ResourceId = id

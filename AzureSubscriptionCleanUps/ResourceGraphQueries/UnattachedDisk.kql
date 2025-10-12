@@ -1,0 +1,9 @@
+resources
+| where type has "microsoft.compute/disks"
+| extend diskState = tostring(properties.diskState)
+| where managedBy == "" or diskState == "Unattached"
+| extend createdTime = properties.timeCreated
+| extend daysSinceCreation = datetime_diff('day', now(), todatetime(createdTime))
+| where daysSinceCreation > 90
+| project ResourceName = name, ResourceGroup = resourceGroup, ResourceType = type, Location = location, ResourceId = id, DiskCreatedTime = createdTime, DaysSinceLastAction = daysSinceCreation
+| order by DaysSinceLastAction desc 

@@ -1,0 +1,10 @@
+resourcecontainers
+ | where type == "microsoft.resources/subscriptions/resourcegroups"
+ | join kind=leftouter (
+     resources
+     | summarize count() by resourceGroup
+ ) on resourceGroup
+ | where isnull(count_)
+ | extend Details = pack_all()
+ | extend ServiceName = tags.ServiceName
+ | project ResourceName = resourceGroup, ResourceGroup = resourceGroup, ResourceType = type, Location = location, ResourceId = id

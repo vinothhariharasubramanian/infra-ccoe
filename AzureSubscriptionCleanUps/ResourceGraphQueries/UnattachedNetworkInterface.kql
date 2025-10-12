@@ -1,0 +1,8 @@
+resources
+| where type has "microsoft.network/networkinterfaces"
+| where isnull(properties.privateEndpoint)
+| where isnull(properties.privateLinkService)
+| where properties.hostedWorkloads == "[]"
+| where properties !has 'virtualmachine'
+| extend Details = pack_all()
+| project ResourceName = name, ResourceGroup = resourceGroup, ResourceType = type, Location = location, ResourceId = id

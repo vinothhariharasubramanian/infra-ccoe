@@ -1,0 +1,6 @@
+resources
+| where type =~ "microsoft.web/serverfarms"
+| where properties.numberOfSites == 0
+| extend Details = pack_all()
+| project subscriptionId, Resource=id, resourceGroup, location, Sku=sku.name, Tier=sku.tier, tags ,Details
+| project ResourceName = name, ResourceGroup = resourceGroup, ResourceType = type, Location = location, ResourceId = id
