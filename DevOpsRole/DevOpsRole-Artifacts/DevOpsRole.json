@@ -1,0 +1,21 @@
+{
+    "id": "/subscriptions/ca4b48a8-2f91-4374-8d48-dac657131ae4/providers/Microsoft.Authorization/roleDefinitions/628917df-0ec7-4fff-a662-c0c2324b40fe",
+    "properties": {
+        "roleName": "DevOpsElevatedRole",
+        "description": "Enhanced DevOps role with permissions to create custom roles without privilege escalations.",
+        "assignableScopes": [
+            "/subscriptions/ca4b48a8-2f91-4374-8d48-dac657131ae4"
+        ],
+        "permissions": [
+            {
+                "actions": [
+                    "Microsoft.Authorization/*/Delete",
+                    "Microsoft.Authorization/*/Write"
+                ],
+                "notActions": [],
+                "dataActions": [],
+                "notDataActions": []
+            }
+        ]
+    }
+}

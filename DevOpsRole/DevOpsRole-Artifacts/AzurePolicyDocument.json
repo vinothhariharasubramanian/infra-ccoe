@@ -1,0 +1,53 @@
+{
+  "mode": "All",
+  "policyRule": {
+    "if": {
+      "allOf": [
+        {
+          "field": "type",
+          "equals": "Microsoft.Authorization/roleDefinitions"
+        },
+        {
+          "field": "Microsoft.Authorization/roleDefinitions/roleName",
+          "notLike": "DevOps*"
+        },
+        {
+          "anyOf": [
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "*"
+            },
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "like": "Microsoft.Authorization/*"
+            },            
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "Microsoft.Authorization/roleAssignments/*"
+            },
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "Microsoft.Authorization/roleAssignments/write"
+            },
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "Microsoft.Authorization/roleAssignments/delete"
+            },
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "Microsoft.Authorization/roleDefinitions/*"
+            },
+            {
+              "field": "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]",
+              "equals": "Microsoft.Authorization/policyAssignments/*"
+            }
+          ]
+        }
+      ]
+    },
+    "then": {
+      "effect": "deny"
+    }
+  },
+  "parameters": {}
+}
