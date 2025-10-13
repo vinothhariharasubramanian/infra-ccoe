@@ -11,7 +11,7 @@ resource "azurerm_role_definition" "ccoe_devops_elevated" {
     ]
     not_actions = []
   }
-  description = "Enhanced DevOps role with permissions to create custom roles without previlage escalations."
+  description = "Enhanced DevOps role with permissions to create custom roles without privilege escalations."
 }
 
 resource "azurerm_policy_definition" "prevent_elevated_access" {
@@ -29,7 +29,7 @@ resource "azurerm_policy_definition" "prevent_elevated_access" {
           equals = "Microsoft.Authorization/roleDefinitions"
         },
         {
-          anyOf = [for prefix in var.role_prefix_to_ignore : {
+          allOf = [for prefix in var.role_prefix_to_ignore : {
             field   = "Microsoft.Authorization/roleDefinitions/roleName"
             notLike = "${prefix}*"
           }]
@@ -43,6 +43,22 @@ resource "azurerm_policy_definition" "prevent_elevated_access" {
             {
               field  = "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]"
               equals = "Microsoft.Authorization/roleAssignments/*"
+            },
+            {
+              field  = "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]"
+              equals = "Microsoft.Authorization/roleAssignments/write"
+            },
+            {
+              field  = "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]"
+              equals = "Microsoft.Authorization/roleAssignments/delete"
+            },
+            {
+              field  = "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]"
+              equals = "Microsoft.Authorization/roleDefinitions/*"
+            },
+            {
+              field  = "Microsoft.Authorization/roleDefinitions/permissions[*].actions[*]"
+              equals = "Microsoft.Authorization/policyAssignments/*"
             }
           ]
         }
