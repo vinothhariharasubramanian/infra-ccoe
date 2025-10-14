@@ -1,0 +1,15 @@
+# Terraform files
+DevOpsRole/terraform/*.tfstate
+DevOpsRole/terraform/*.tfstate.*
+DevOpsRole/terraform/*.tfplan
+DevOpsRole/terraform/*.tfplan.*
+DevOpsRole/terraform/.terraform/
+DevOpsRole/terraform/.terraform.lock.hcl
+
+# Crash log files
+DevOpsRole/terraform/crash.log
+DevOpsRole/terraform/crash.*.log
+
+# Exclude all .tfvars files
+DevOpsRole/terraform/*.tfvars
+DevOpsRole/terraform/*.tfvars.json
