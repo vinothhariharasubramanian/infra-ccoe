@@ -1,0 +1,30 @@
+patchinstallationresources 
+| where type == "microsoft.compute/virtualmachines/patchinstallationresults" 
+| extend machineName = tostring(split(id, "/", 8)[0]), 
+    lastUpdatedTime = todatetime(properties.lastModifiedDateTime), 
+    failedPatchCount = toint(properties.failedPatchCount), 
+    installedPatchCount = toint(properties.installedPatchCount), 
+    RunId = coalesce(tostring(split(properties.maintenanceRunId, "/", 12)[0]),"0"),
+    status = properties.status,
+    startedBy = tostring(properties.startedBy),
+    resourceGroup
+| where startedBy == "User"
+| where lastUpdatedTime >= ago(5h)
+| summarize arg_max(lastUpdatedTime, *) by machineName
+| join kind=leftouter ( 
+    patchinstallationresources 
+    | where type == "microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches" 
+    | extend 
+        machineName = tostring(split(id, "/", 8)[0]), 
+        patchName = tostring(properties.patchName), 
+        kbId = tostring(properties.kbId), 
+        installationState = tostring(properties.installationState), 
+        classifications = tostring(properties.classifications[0]), 
+        lastUpdatedTime = todatetime(properties.lastModifiedDateTime),
+        failedPatchCount = toint(properties.failedPatchCount), 
+        installedPatchCount = toint(properties.installedPatchCount),
+        status = properties.status
+    | where lastUpdatedTime >= ago(5h) and installationState == 'Installed'
+) on machineName
+| project machineName, location, subscriptionId, resourceGroup, status, lastUpdatedTime, patchName, kbId, installationState, classifications
+| order by ['machineName'] asc

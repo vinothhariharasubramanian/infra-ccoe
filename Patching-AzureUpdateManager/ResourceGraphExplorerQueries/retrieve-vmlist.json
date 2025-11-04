@@ -1,0 +1,4 @@
+resources
+| where type == "microsoft.compute/virtualmachines"
+| where tags["PatchScope"] == "Yes" and isnotempty(tags["PatchMethod"]) and tags["Tranche"] == "1"
+| project name, id, type, location, tags

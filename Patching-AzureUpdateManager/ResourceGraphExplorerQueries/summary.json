@@ -1,0 +1,34 @@
+patchinstallationresources 
+| where type == "microsoft.compute/virtualmachines/patchinstallationresults" 
+| extend machineName = tostring(split(id, "/", 8)[0]), 
+    lastUpdatedTime = todatetime(properties.lastModifiedDateTime), 
+    failedPatchCount = toint(properties.failedPatchCount), 
+    installedPatchCount = toint(properties.installedPatchCount), 
+    RunId = coalesce(tostring(split(properties.maintenanceRunId, "/", 12)[0]),"0") 
+| where RunId == '20250810163500' 
+| join kind=leftouter ( 
+    patchinstallationresources 
+    | where type == "microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches" 
+    | extend 
+        machineName = tostring(split(id, "/", 8)[0]), 
+        patchName = tostring(properties.patchName), 
+        kbId = tostring(properties.kbId), 
+        installationState = tostring(properties.installationState), 
+        classifications = tostring(properties.classifications), 
+        lastModifiedDateTime = todatetime(properties.lastModifiedDateTime)
+    | where lastModifiedDateTime >= ago(1d)
+) on machineName
+| summarize 
+    lastModifiedDateTime = max(lastModifiedDateTime), 
+    failedPatchCount = max(failedPatchCount), 
+    installPatchCount = max(installedPatchCount), 
+    allPatches = coalesce(strcat_array(make_list(iff(isnotempty(patchName) and patchName != "", 
+    strcat(patchName, " (", installationState, ")"), "")), "; "), ""), 
+    failedPatches = coalesce(strcat_array(make_list(iff(installationState == "Failed",
+    strcat(patchName, " (", kbId, ")"), "")), "; "), ""), 
+    installedPatches = coalesce(strcat_array(make_list(iff(installationState == "Installed", 
+    strcat(patchName, " (", kbId, ")"), "")), "; "), ""), 
+    allKBIds = coalesce(strcat_array(make_list(iff(isnotempty(kbId) and kbId != "", kbId, "")), "; "), ""), 
+    patchClassifications = coalesce(strcat_array(make_list(iff(isnotempty(classifications) and classifications != "", 
+    classifications, "")), "; "), "") by resourceGroup, machineName, RunId 
+| order by RunId

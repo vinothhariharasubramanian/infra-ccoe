@@ -13,3 +13,39 @@ DevOpsRole/terraform/crash.*.log
 # Exclude all .tfvars files
 DevOpsRole/terraform/*.tfvars
 DevOpsRole/terraform/*.tfvars.json
+
+
+# Exclude In progress GenAI working directory
+GenAI-StreamlitApp/
+
+
+# Exclude Modularize-IaaC working directory
+Modularize-iaac/
+
+
+# Terraform files for Patching
+
+# ARM Template deployment artifacts
+*.azuredeploy.parameters.*.json
+deployment-outputs.json
+
+# Azure CLI
+.azure/
+
+# Resource Graph queries 
+logic-app-json-files/
+
+# Terraform
+*.tfstate
+*.tfstate*.*
+*.tfplan
+*.tfplan.*
+Patching-AzureUpdateManager/terraform-uksouth/.terraform
+Patching-AzureUpdateManager/terraform-ukwest/.terraform
+terraform-uksouth/.terraform/
+.terraform.lock.hcl
+terraform*.tfvars
+*.auto.tfvars
+*.auto.tfvars.json
+crash.log
+crash.*.log

@@ -1,0 +1,4 @@
+patchassessmentresources 
+| where type == 'microsoft.compute/virtualmachines/patchassessmentresults'
+| extend machineName = tostring(split(id, '/', 8)[0]), lastModified = todatetime(properties.lastModifiedDateTime)
+| where machineName in ('<VMList>') and lastModified >= datetime('2024-09-03T10:59:17.000Z')

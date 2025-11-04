@@ -1,0 +1,47 @@
+patchinstallationresources 
+| where type == 'microsoft.compute/virtualmachines/patchinstallationresults' 
+| extend 
+    machineName = tostring(split(id, '/', 8)[0]), 
+    resourceGroup = tostring(split(id, '/', 4)), 
+    lastUpdatedTime = todatetime(properties.lastModifiedDateTime), 
+    failedPatchCount = toint(properties.failedPatchCount), 
+    installedPatchCount = toint(properties.installedPatchCount), 
+    RunId = coalesce(tostring(split(properties.maintenanceRunId, '/', 12)[0]), '0'), 
+    status = tostring(properties.status) 
+    | where RunId == '20250808115000' 
+    | where failedPatchCount > 0 or status == 'Failed' 
+    | join kind=leftouter (
+        patchinstallationresources 
+        | where type == 'microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches' 
+        | extend 
+            machineName = tostring(split(id, '/', 8)[0]), 
+            patchName = tostring(properties.patchName), 
+            kbId = tostring(properties.kbId), 
+            installationState = tostring(properties.installationState), 
+            lastModified = todatetime(properties.lastModifiedDateTime) 
+            | where RunId == '20250808115000'
+            | project 
+                machineName, 
+                resourceGroup, 
+                patchName, 
+                kbId, 
+                installationState
+        ) on machineName 
+    | summarize 
+        lastUpdatedTime = max(lastUpdatedTime), 
+        failedPatchCount = max(failedPatchCount), 
+        installPatchCount = max(installedPatchCount), 
+        status = any(status), 
+        failedPatches = strcat_array(make_list(iff(installationState == 'Failed', 
+        strcat(patchName, ' (', kbId, ')'), '')), ', ') 
+        by machineName, RunId 
+        | project 
+            machineName, 
+            RunId, 
+            lastUpdatedTime, 
+            failedPatchCount, 
+            installPatchCount, 
+            status, 
+            failedPatches, 
+            alertTime = now() 
+        | sort by lastUpdatedTime desc

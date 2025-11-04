@@ -1,0 +1,1244 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.1",
+  "parameters": {
+    "ResourceGroupName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the resource group"
+      }
+    },
+    "EnvironmentStage": {
+        "type": "string",
+        "defaultValue": "ppd",
+        "allowedValues": ["prod", "ppd"],
+        "metadata": {
+            "description": "Stage of the environment"
+        }
+    },
+    "TeamsWebhookUrl": {
+        "type": "string",
+        "metadata": {
+            "description": "Teams webhook URL for notifications"
+        }
+    }
+  },
+  "variables": {
+    "subscriptionId": "[subscription().subscriptionId]",
+    "location": "[resourceGroup().location]",
+    "regionCode": "[if(equals(variables('location'), 'uksouth'), 'su', 'wu')]",
+    "managedIdentityName": "[concat('az',  variables('regionCode'),'-userassigned-managed-identity')]",
+    "managedIdentityId": "[resourceId(parameters('ResourceGroupName'), 'Microsoft.ManagedIdentity/userAssignedIdentities', variables('managedIdentityName'))]",
+    "maintenanceConfigName": "[concat('az', variables('regionCode'), '-', toLower(parameters('EnvironmentStage')), '-maintenance-config')]",
+    "automationAccountName": "[concat('az', variables('regionCode'), '-automation-snapshot')]",
+    "eventGridConnectionName": "[concat('az', variables('regionCode'), '-azureeventgrid')]",
+    "teamsConnectionName": "[concat('az', variables('regionCode'), '-teams')]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('eventGridConnectionName')]",
+      "location": "[variables('location')]",
+      "properties": {
+        "displayName": "Azure Event Grid Connection",
+        "api": {
+          "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'azureeventgrid')]"
+        },
+        "parameterValues": {}
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('teamsConnectionName')]",
+      "location": "[variables('location')]",
+      "properties": {
+        "displayName": "Microsoft Teams Connection",
+        "api": {
+          "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'teams')]"
+        },
+        "parameterValues": {}
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[concat('az', variables('regionCode'), '-logicapp-premaintenance')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('eventGridConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('managedIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "When_a_resource_event_occurs": {
+              "splitOn": "@triggerBody()",
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azureeventgrid']['connectionId']"
+                  }
+                },
+                "body": {
+                  "properties": {
+                    "topic": "[toLower(resourceId('Microsoft.Maintenance/maintenanceConfigurations', variables('maintenanceConfigName')))]",
+                    "destination": {
+                      "endpointType": "webhook",
+                      "properties": {
+                        "endpointUrl": "@listCallbackUrl()"
+                      }
+                    },
+                    "filter": {
+                      "includedEventTypes": [
+                        "Microsoft.Maintenance.PreMaintenanceEvent"
+                      ]
+                    }
+                  }
+                },
+                "path": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Maintenance.MaintenanceConfigurations/resource/eventSubscriptions')]",
+                "queries": {
+                  "x-ms-api-version": "2017-09-15-preview"
+                }
+              }
+            }
+          },
+          "actions": {
+            "Parse_JSON": {
+              "runAfter": {},
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@triggerBody()?['data']",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "CorrelationId": {
+                      "type": "string"
+                    },
+                    "MaintenanceConfigurationId": {
+                      "type": "string"
+                    },
+                    "StartDateTime": {
+                      "type": "string"
+                    },
+                    "EndDateTime": {
+                      "type": "string"
+                    },
+                    "CancellationCutOffDateTime": {
+                      "type": "string"
+                    },
+                    "ResourceSubscriptionIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Extract_Configuration_ID": {
+              "runAfter": {
+                "Parse_JSON": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@body('Parse_JSON')?['MaintenanceConfigurationId']"
+            },
+            "Generate_Run_ID": {
+              "runAfter": {
+                "Parse_JSON": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@replace(replace(replace(replace(substring(body('Parse_JSON')?['StartDateTime'], 0, 19), '-', ''), ':', ''), 'T', ''), '.', '')"
+            },
+            "Compose_Full_Trigger": {
+              "runAfter": {
+                "Parse_JSON": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@triggerBody()"
+            },
+            "Compose_Data_Property": {
+              "runAfter": {
+                "Compose_Full_Trigger": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@triggerBody()?['data']"
+            },
+            "Debug_Subscriptions": {
+              "runAfter": {
+                "Extract_Configuration_ID": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@body('Parse_JSON')?['ResourceSubscriptionIds']"
+            },
+            "Query_VMs_By_Tags": {
+              "runAfter": {
+                "Debug_Subscriptions": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01",
+                "method": "POST",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "subscriptions": "@body('Parse_JSON')?['ResourceSubscriptionIds']",
+                  "query": "resources | where type == \"microsoft.compute/virtualmachines\" | where tags[\"PatchScope\"] == \"Yes\" and isnotempty(tags[\"PatchMethod\"]) | project name, id, type, location"
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Parse_VM_Query": {
+              "runAfter": {
+                "Query_VMs_By_Tags": [
+                  "Succeeded"
+                ]
+              },
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@body('Query_VMs_By_Tags')",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "id": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string"
+                          },
+                          "location": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Create_VM_List": {
+              "runAfter": {
+                "Parse_VM_Query": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@body('Parse_VM_Query')?['data']"
+            },
+            "Create_VM_Count": {
+              "runAfter": {
+                "Create_VM_List": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@length(outputs('Create_VM_List'))"
+            },
+            "Format_VM_Names": {
+              "runAfter": {
+                "Create_VM_Count": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Select",
+              "inputs": {
+                "from": "@outputs('Create_VM_List')",
+                "select": "@{item()?['name']}"
+              }
+            },
+            "Join_VM_Names": {
+              "runAfter": {
+                "Format_VM_Names": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@{if(equals(length(outputs('Create_VM_List')), 0), 'No VMs with PatchMethod tag', join(body('Format_VM_Names'), ', '))}"
+            },
+            "Execute_Snapshot_Script": {
+              "runAfter": {
+                "Join_VM_Names": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Automation/automationAccounts/az', variables('regionCode'), '-automation-snapshot/jobs/@{guid()}?api-version=2020-01-13-preview')]",
+                "method": "PUT",
+                "body": {
+                  "properties": {
+                    "runbook": {
+                      "name": "SnapshotCreation"
+                    },
+                    "parameters": {
+                      "SubscriptionId": "[subscription().subscriptionId]",
+                      "VMNames": "@{join(body('Format_VM_Names'), ',')}",
+                      "BatchSize": "25"
+                    }
+                  }
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Wait_For_Snapshot_Completion": {
+              "actions": {
+                "Check_Job_Status": {
+                  "type": "Http",
+                  "inputs": {
+                    "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Automation/automationAccounts/az', variables('regionCode'), '-automation-snapshot/jobs/@{body(''Execute_Snapshot_Script'')?[''name'']}?api-version=2020-01-13-preview')]",
+                    "method": "GET",
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "identity": "[variables('managedIdentityId')]",
+                      "audience": "https://management.azure.com/"
+                    }
+                  }
+                },
+                "Delay": {
+                  "runAfter": {
+                    "Check_Job_Status": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Wait",
+                  "inputs": {
+                    "interval": {
+                      "count": 30,
+                      "unit": "Second"
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Execute_Snapshot_Script": [
+                  "Succeeded"
+                ]
+              },
+              "expression": "@or(equals(body('Check_Job_Status')?['properties']?['status'], 'Completed'), equals(body('Check_Job_Status')?['properties']?['status'], 'Failed'))",
+              "limit": {
+                "count": 60,
+                "timeout": "PT1H"
+              },
+              "type": "Until"
+            },
+            "Enable_Scheduler_Logic_App": {
+              "runAfter": {
+                "Wait_For_Snapshot_Completion": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Logic/workflows/az', variables('regionCode'), '-logicapp-scheduler/enable?api-version=2016-06-01')]",
+                "method": "POST",
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Update_Scheduler_With_RunId": {
+              "runAfter": {
+                "Enable_Scheduler_Logic_App": [
+                  "Succeeded"
+                ],
+                "Generate_Run_ID": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Logic/workflows/az', variables('regionCode'), '-logicapp-scheduler?api-version=2016-06-01')]",
+                "method": "PUT",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "location": "[variables('location')]",
+                  "identity": {
+                    "type": "UserAssigned",
+                    "userAssignedIdentities": {
+                      "[variables('managedIdentityId')]": {}
+                    }
+                  },
+                  "properties": {
+                    "state": "Enabled",
+                    "definition": {
+                      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+                      "contentVersion": "1.0.0.0",
+                      "triggers": {
+                        "Recurrence": {
+                          "recurrence": {
+                            "interval": 5,
+                            "frequency": "Minute",
+                            "timeZone": "GMT Standard Time"
+                          },
+                          "type": "Recurrence"
+                        }
+                      },
+                      "actions": {
+                        "Call_Monitor_Logic_App": {
+                          "type": "Http",
+                          "inputs": {
+                            "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Logic/workflows/az', variables('regionCode'), '-logicapp-maintenance-monitor/triggers/GetRunId/run?api-version=2016-06-01')]",
+                            "method": "POST",
+                            "body": {
+                              "RunId": "@{outputs('Generate_Run_ID')}"
+                            },
+                            "authentication": {
+                              "type": "ManagedServiceIdentity",
+                              "identity": "[variables('managedIdentityId')]",
+                              "audience": "https://management.azure.com/"
+                            }
+                          },
+                          "runAfter": {}
+                        }
+                      },
+                      "outputs": {},
+                      "parameters": {
+                        "RunId": {
+                          "type": "string",
+                          "defaultValue": ""
+                        }
+                      }
+                    },
+                    "parameters": {
+                      "RunId": {
+                        "value": "@{outputs('Generate_Run_ID')}"
+                      }
+                    }
+                  }
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Send_Teams_Notification": {
+              "runAfter": {
+                "Update_Scheduler_With_RunId": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[parameters('TeamsWebhookUrl')]",
+                "method": "POST",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "@@type": "MessageCard",
+                  "@@context": "https://schema.org/extensions",
+                  "summary": "Pre-Maintenance Notification",
+                  "themeColor": "0076D7",
+                  "sections": [
+                    {
+                      "activityTitle": "AZURE UPDATE MANAGER - PRE MAINTENANCE NOTIFICATION",
+                      "activitySubtitle": "Maintenance Window Starting",
+                      "facts": [
+                        {
+                          "name": "Start Time",
+                          "value": "@{body('Parse_JSON')?['StartDateTime']}"
+                        },
+                        {
+                          "name": "End Time",
+                          "value": "@{body('Parse_JSON')?['EndDateTime']}"
+                        },
+                        {
+                          "name": "VMs Affected Count",
+                          "value": "@{if(equals(length(outputs('Create_VM_List')), 0), 'None', concat(length(outputs('Create_VM_List')), ' VM(s)'))}"
+                        }
+                      ],
+                      "text": "**VM List:**<br>@{outputs('Join_VM_Names')}<br><br>This is an automated notification from Azure Update Manager"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "outputs": {},
+          "parameters": {
+            "$connections": {
+              "type": "Object",
+              "defaultValue": {}
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azureeventgrid": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'azureeventgrid')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('eventGridConnectionName'))]",
+                "connectionName": "azureeventgrid"
+              },
+              "teams": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'teams')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                "connectionName": "teams"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[concat('az', variables('regionCode'), '-logicapp-postmaintenance')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('eventGridConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('managedIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "When_a_resource_event_occurs": {
+              "splitOn": "@triggerBody()",
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azureeventgrid']['connectionId']"
+                  }
+                },
+                "body": {
+                  "properties": {
+                    "topic": "[toLower(resourceId('Microsoft.Maintenance/maintenanceConfigurations', variables('maintenanceConfigName')))]",
+                    "destination": {
+                      "endpointType": "webhook",
+                      "properties": {
+                        "endpointUrl": "@listCallbackUrl()"
+                      }
+                    },
+                    "filter": {
+                      "includedEventTypes": [
+                        "Microsoft.Maintenance.PostMaintenanceEvent"
+                      ]
+                    }
+                  }
+                },
+                "path": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Maintenance.MaintenanceConfigurations/resource/eventSubscriptions')]",
+                "queries": {
+                  "x-ms-api-version": "2017-09-15-preview"
+                }
+              }
+            }
+          },
+          "actions": {
+            "Parse_JSON": {
+              "runAfter": {},
+              "type": "ParseJson",
+              "inputs": {
+                "content": "@triggerBody()?['data']",
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "CorrelationId": {
+                      "type": "string"
+                    },
+                    "MaintenanceConfigurationId": {
+                      "type": "string"
+                    },
+                    "StartDateTime": {
+                      "type": "string"
+                    },
+                    "EndDateTime": {
+                      "type": "string"
+                    },
+                    "CancellationCutOffDateTime": {
+                      "type": "string"
+                    },
+                    "ResourceSubscriptionIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "Extract_RunId": {
+              "type": "Compose",
+              "inputs": "@last(split(body('Parse_JSON')?['CorrelationId'], '/'))",
+              "runAfter": {
+                "Parse_JSON": [
+                  "Succeeded"
+                ]
+              }
+            },
+            "Query_Resource_Graph": {
+              "type": "Http",
+              "inputs": {
+                "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01",
+                "method": "POST",
+                "body": {
+                  "query": "patchinstallationresources | where type == \"microsoft.compute/virtualmachines/patchinstallationresults\" | extend machineName = tostring(split(id, \"/\", 8)[0]), lastUpdatedTime = todatetime(properties.lastModifiedDateTime), failedPatchCount = toint(properties.failedPatchCount), installedPatchCount = toint(properties.installedParchCount), RunId = coalesce(tostring(split(properties.maintenanceRunId, \"/\", 12)[0]),\"0\") | where RunId == '@{outputs('Extract_RunId')}' | join kind=leftouter ( patchinstallationresources | where type == \"microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches\" | extend machineName = tostring(split(id, \"/\", 8)[0]), RunId = coalesce(tostring(split(properties.maintenanceRunId, \"/\", 12)[0]),\"0\"), patchName = tostring(properties.patchName), kbId = tostring(properties.kbId), installationState = tostring(properties.installationState), classifications = tostring(properties.classifications), lastModifiedDateTime = todatetime(properties.lastModifiedDateTime) | where lastModifiedDateTime >= ago(1d) ) on machineName | summarize lastModifiedDateTime = max(lastModifiedDateTime), failedPatchCount = max(failedPatchCount), installPatchCount = max(installedPatchCount), allPatches = coalesce(strcat_array(make_list(iff(isnotempty(patchName) and patchName != \"\", strcat(patchName, \" (\", installationState, \")\"), \"\")), \"; \"), \"\"), failedPatches = coalesce(strcat_array(make_list(iff(installationState == \"Failed\", strcat(patchName, \" (\", kbId, \")\"), \"\")), \"; \"), \"\"), installedPatches = coalesce(strcat_array(make_list(iff(installationState == \"Installed\", strcat(patchName, \" (\", kbId, \")\"), \"\")), \"; \"), \"\"), allKBIds = coalesce(strcat_array(make_list(iff(isnotempty(kbId) and kbId != \"\", kbId, \"\")), \"; \"), \"\"), patchClassifications = coalesce(strcat_array(make_list(iff(isnotempty(classifications) and classifications != \"\", classifications, \"\")), \"; \"), \"\") by resourceGroup, machineName, RunId | order by RunId",
+                  "subscriptions": "@body('Parse_JSON')?['ResourceSubscriptionIds']"
+                },
+                "authentication": {
+                  "identity": "[variables('managedIdentityId')]",
+                  "type": "ManagedServiceIdentity"
+                }
+              },
+              "runAfter": {
+                "Extract_RunId": [
+                  "Succeeded"
+                ]
+              }
+            },
+            "Select_Table_Rows": {
+              "type": "Select",
+              "inputs": {
+                "from": "@body('Query_Resource_Graph')?['data']",
+                "select": "@concat('<tr><td style=\"padding: 8px; border: 1px solid #666; color: #242424;\">', item()?['machineName'], '</td><td style=\"padding: 8px; border: 1px solid #666; color: #242424;\">', item()?['RunId'], '</td><td style=\"padding: 8px; border: 1px solid #666; color: #242424;\">', item()?['lastModifiedDateTime'], '</td><td style=\"padding: 8px; border: 1px solid #666; color: #242424;\">', replace(item()?['failedPatches'], '; ', '<br>'), '</td><td style=\"padding: 8px; border: 1px solid #666; color: #242424;\">', replace(item()?['installedPatches'], '; ', '<br>'), '</td></tr>')"
+              },
+              "runAfter": {
+                "Query_Resource_Graph": [
+                  "Succeeded"
+                ]
+              }
+            },
+            "Create_Table_Rows": {
+              "type": "Compose",
+              "inputs": "@if(greater(length(body('Query_Resource_Graph')?['data']), 0), join(body('Select_Table_Rows'), ''), '<tr><td colspan=\"5\" style=\"padding: 8px; text-align: center; border: 1px solid #666; font-style: italic; color: #757575;\">No data found</td></tr>')",
+              "runAfter": {
+                "Select_Table_Rows": [
+                  "Succeeded"
+                ]
+              }
+            },
+
+            "Disable_Scheduler_Logic_App": {
+              "runAfter": {
+                "Create_Table_Rows": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Logic/workflows/az', variables('regionCode'), '-logicapp-scheduler/disable?api-version=2016-06-01')]",
+                "method": "POST",
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Send_Teams_Notification": {
+              "type": "Http",
+              "inputs": {
+                "uri": "[parameters('TeamsWebhookUrl')]",
+                "method": "POST",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "@@context": "https://schema.org/extensions",
+                  "@@type": "MessageCard",
+                  "sections": [
+                    {
+                      "activitySubtitle": "Patching Completed",
+                      "activityTitle": "AZURE UPDATE MANAGER - POST MAINTENANCE NOTIFICATION",
+                      "facts": [
+                        {
+                          "name": "Run ID",
+                          "value": "@{outputs('Extract_RunId')}"
+                        },
+                        {
+                          "name": "Total Machines Patched",
+                          "value": "@{body('Query_Resource_Graph')?['totalRecords']}"
+                        },
+                        {
+                          "name": "Failed Machines Patch Count",
+                          "value": "@{if(greater(length(body('Query_Resource_Graph')?['data']), 0), body('Query_Resource_Graph')?['data'][0]?['failedPatchCount'], '0')}"
+                        }
+                      ],
+                      "text": "<table border='1' style='border-collapse: collapse; width: 100%; margin: 10px 0; font-family: Arial, sans-serif; color: #333;'><thead><tr style='background-color: #0078d4; color: white;'><th style='padding: 8px; text-align: left; border: 1px solid #666;'>Machine Name</th><th style='padding: 8px; text-align: left; border: 1px solid #666;'>Run ID</th><th style='padding: 8px; text-align: left; border: 1px solid #666;'>Modified DateTime</th><th style='padding: 8px; text-align: left; border: 1px solid #666;'>Failed Patches</th><th style='padding: 8px; text-align: left; border: 1px solid #666;'>Installed Patches</th></tr></thead><tbody>@{outputs('Create_Table_Rows')}</tbody></table><br><p style='margin-top: 15px; font-style: italic; color: #666;'>This is an automated notification from Azure Update Manager</p>"
+                    }
+                  ],
+                  "summary": "Post-Maintenance Notification",
+                  "themeColor": "6264A7"
+                }
+              },
+              "runAfter": {
+                "Disable_Scheduler_Logic_App": [
+                  "Succeeded"
+                ]
+              }
+            }
+          },
+          "outputs": {},
+          "parameters": {
+            "$connections": {
+              "type": "Object",
+              "defaultValue": {}
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "azureeventgrid": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'azureeventgrid')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('eventGridConnectionName'))]",
+                "connectionName": "azureeventgrid"
+              },
+              "teams": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'teams')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                "connectionName": "teams"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[concat('az', variables('regionCode'), '-logicapp-maintenance-monitor')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('managedIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "GetRunId": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "RunId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "RunId"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "Initialize_Machine_List": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "MachineDetails",
+                    "type": "string",
+                    "value": ""
+                  }
+                ]
+              },
+              "runAfter": {}
+            },
+            "Set_RunId_Filter": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "RunIdFilter",
+                    "type": "string",
+                    "value": "@{if(empty(triggerBody()?['RunId']), 'RunId != 0', concat('RunId == ''', triggerBody()?['RunId'], ''''))}"
+                  }
+                ]
+              },
+              "runAfter": {
+                "Initialize_Machine_List": [
+                  "Succeeded"
+                ]
+              }
+            },
+            "Query_Azure_Resource_Graph": {
+              "runAfter": {
+                "Set_RunId_Filter": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01",
+                "method": "POST",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "subscriptions": [
+                    "[variables('subscriptionId')]"
+                  ],
+                  "query": "patchinstallationresources | where type == 'microsoft.compute/virtualmachines/patchinstallationresults' | extend machineName = tostring(split(id, '/', 8)[0]), resourceGroup = tostring(split(id, '/', 4)), lastUpdatedTime = todatetime(properties.lastModifiedDateTime), failedPatchCount = toint(properties.failedPatchCount), installedPatchCount = toint(properties.installedPatchCount), RunId = coalesce(tostring(split(properties.maintenanceRunId, '/', 12)[0]),'0'), status = tostring(properties.status) | where @{variables('RunIdFilter')} | where failedPatchCount > 0 or status == 'Failed' | join kind=leftouter (patchinstallationresources | where type == 'microsoft.compute/virtualmachines/patchinstallationresults/softwarepatches' | extend machineName = tostring(split(id, '/', 8)[0]), patchName = tostring(properties.patchName), kbId = tostring(properties.kbId), RunId = coalesce(tostring(split(properties.maintenanceRunId, '/', 12)[0]),'0'), installationState = tostring(properties.installationState), lastModified = todatetime(properties.lastModifiedDateTime) | where @{variables('RunIdFilter')} | project machineName, resourceGroup, patchName, kbId, installationState) on machineName | summarize lastUpdatedTime = max(lastUpdatedTime), failedPatchCount = max(failedPatchCount), installPatchCount = max(installedPatchCount), status = any(status), failedPatches = strcat_array(make_list(iff(installationState == 'Failed', strcat(patchName, ' (', kbId, ')'), '')), ', ') by machineName, RunId | project machineName, RunId, lastUpdatedTime, failedPatchCount, installPatchCount, status, failedPatches, alertTime = now() | sort by lastUpdatedTime desc"
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]"
+                }
+              },
+              "runtimeConfiguration": {
+                "contentTransfer": {
+                  "transferMode": "Chunked"
+                }
+              }
+            },
+            "Check_if_failures_found": {
+              "actions": {
+                "For_each_machine": {
+                  "type": "Foreach",
+                  "foreach": "@body('Query_Azure_Resource_Graph')?['data']",
+                  "actions": {
+                    "Append_machine_info": {
+                      "type": "AppendToStringVariable",
+                      "inputs": {
+                        "name": "MachineDetails",
+                        "value": "@{concat('• Machine: ', items('For_each_machine')['machineName'], ' | Failed Patches: ', items('For_each_machine')['failedPatchCount'], ' | Alert Time: ', items('For_each_machine')['alertTime'], '<br><br>')}"
+                      }
+                    }
+                  }
+                },
+                "Send_Teams_Alert": {
+                  "type": "Http",
+                  "inputs": {
+                    "uri": "[parameters('TeamsWebhookUrl')]",
+                    "method": "POST",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "@@type": "MessageCard",
+                      "@@context": "https://schema.org/extensions",
+                      "summary": "Patch Monitor Alert - Issues Detected",
+                      "themeColor": "FF0000",
+                      "sections": [
+                        {
+                          "activityTitle": "🚨 Patch Monitor Alert",
+                          "activitySubtitle": "Issues Detected",
+                          "facts": [
+                            {
+                              "name": "Total Records",
+                              "value": "@{body('Query_Azure_Resource_Graph')?['totalRecords']}"
+                            },
+                            {
+                              "name": "Alert Time",
+                              "value": "@{utcNow()}"
+                            }
+                          ],
+                          "text": "@{variables('MachineDetails')}"
+                        }
+                      ]
+                    }
+                  },
+                  "runAfter": {
+                    "For_each_machine": [
+                      "Succeeded"
+                    ]
+                  }
+                }
+              },
+              "runAfter": {
+                "Query_Azure_Resource_Graph": [
+                  "Succeeded"
+                ]
+              },
+              "else": {
+                "actions": {
+                  "Compose": {
+                    "type": "Compose",
+                    "inputs": "No Patch failures detected"
+                  }
+                }
+              },
+              "expression": {
+                "and": [
+                  {
+                    "greater": [
+                      "@length(body('Query_Azure_Resource_Graph')?['data'])",
+                      0
+                    ]
+                  }
+                ]
+              },
+              "type": "If"
+            }
+          },
+          "outputs": {},
+          "parameters": {
+            "$connections": {
+              "type": "Object",
+              "defaultValue": {}
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "teams": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'teams')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                "connectionName": "teams"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[concat('az', variables('regionCode'), '-logicapp-scheduler')]",
+      "location": "[variables('location')]",
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('managedIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "state": "Disabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "Recurrence": {
+              "recurrence": {
+                "interval": 5,
+                "frequency": "Minute",
+                "timeZone": "GMT Standard Time"
+              },
+              "evaluatedRecurrence": {
+                "interval": 5,
+                "frequency": "Minute",
+                "timeZone": "GMT Standard Time"
+              },
+              "type": "Recurrence"
+            }
+          },
+          "actions": {
+            "Call_Monitor_Logic_App": {
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Logic/workflows/az', variables('regionCode'), '-logicapp-maintenance-monitor/triggers/GetRunId/run?api-version=2016-06-01')]",
+                "method": "POST",
+                "body": {
+                  "RunId": "@parameters('RunId')"
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              },
+              "runAfter": {}
+            }
+          },
+          "outputs": {},
+          "parameters": {
+            "RunId": {
+              "type": "string",
+              "defaultValue": ""
+            }
+          }
+        },
+        "parameters": {
+          "RunId": {
+            "value": ""
+          }
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2017-07-01",
+      "name": "[concat('az', variables('regionCode'), '-ondemand-logicapp-premaintenance')]",
+      "location": "[variables('location')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "identity": {
+        "type": "UserAssigned",
+        "userAssignedIdentities": {
+          "[variables('managedIdentityId')]": {}
+        }
+      },
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "manual": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "VMNames": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "StartTime": {
+                      "type": "string"
+                    },
+                    "EndTime": {
+                      "type": "string"
+                    },
+                    "BatchId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "VMNames",
+                    "StartTime",
+                    "EndTime",
+                    "BatchId"
+                  ]
+                }
+              }
+            }
+          },
+          "actions": {
+            "Create_VM_Count": {
+              "runAfter": {},
+              "type": "Compose",
+              "inputs": "@length(triggerBody()?['VMNames'])"
+            },
+            "Join_VM_Names": {
+              "runAfter": {
+                "Create_VM_Count": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Compose",
+              "inputs": "@join(triggerBody()?['VMNames'], ', ')"
+            },
+            "Execute_Snapshot_Script": {
+              "runAfter": {
+                "Join_VM_Names": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Automation/automationAccounts/', variables('automationAccountName'), '/jobs/@{guid()}?api-version=2020-01-13-preview')]",
+                "method": "PUT",
+                "body": {
+                  "properties": {
+                    "runbook": {
+                      "name": "SnapshotCreation"
+                    },
+                    "parameters": {
+                      "SubscriptionId": "[subscription().subscriptionId]",
+                      "VMNames": "@{join(triggerBody()?['VMNames'], ',')}",
+                      "BatchSize": "25"
+                    }
+                  }
+                },
+                "authentication": {
+                  "type": "ManagedServiceIdentity",
+                  "identity": "[variables('managedIdentityId')]",
+                  "audience": "https://management.azure.com/"
+                }
+              }
+            },
+            "Wait_For_Snapshot_Completion": {
+              "actions": {
+                "Check_Job_Status": {
+                  "type": "Http",
+                  "inputs": {
+                    "uri": "[concat('https://management.azure.com/subscriptions/', subscription().subscriptionId, '/resourceGroups/', parameters('ResourceGroupName'), '/providers/Microsoft.Automation/automationAccounts/', variables('automationAccountName'), '/jobs/@{body(''Execute_Snapshot_Script'')?[''name'']}?api-version=2020-01-13-preview')]",
+                    "method": "GET",
+                    "authentication": {
+                      "type": "ManagedServiceIdentity",
+                      "identity": "[variables('managedIdentityId')]",
+                      "audience": "https://management.azure.com/"
+                    }
+                  }
+                },
+                "Delay": {
+                  "runAfter": {
+                    "Check_Job_Status": [
+                      "Succeeded"
+                    ]
+                  },
+                  "type": "Wait",
+                  "inputs": {
+                    "interval": {
+                      "count": 30,
+                      "unit": "Second"
+                    }
+                  }
+                }
+              },
+              "runAfter": {
+                "Execute_Snapshot_Script": [
+                  "Succeeded"
+                ]
+              },
+              "expression": "@or(equals(body('Check_Job_Status')?['properties']?['status'], 'Completed'), equals(body('Check_Job_Status')?['properties']?['status'], 'Failed'))",
+              "limit": {
+                "count": 60,
+                "timeout": "PT1H"
+              },
+              "type": "Until"
+            },
+            "Send_Teams_Notification": {
+              "runAfter": {
+                "Wait_For_Snapshot_Completion": [
+                  "Succeeded"
+                ]
+              },
+              "type": "Http",
+              "inputs": {
+                "uri": "[parameters('TeamsWebhookUrl')]",
+                "method": "POST",
+                "headers": {
+                  "Content-Type": "application/json"
+                },
+                "body": {
+                  "@@type": "MessageCard",
+                  "@@context": "https://schema.org/extensions",
+                  "summary": "On-Demand Pre-Maintenance Notification",
+                  "themeColor": "0076D7",
+                  "sections": [
+                    {
+                      "activityTitle": "AZURE UPDATE MANAGER - ON-DEMAND PRE MAINTENANCE NOTIFICATION",
+                      "activitySubtitle": "On-Demand Patching Starting",
+                      "facts": [
+                        {
+                          "name": "Batch ID",
+                          "value": "@{triggerBody()?['BatchId']}"
+                        },
+                        {
+                          "name": "Start Time",
+                          "value": "@{triggerBody()?['StartTime']}"
+                        },
+                        {
+                          "name": "End Time",
+                          "value": "@{triggerBody()?['EndTime']}"
+                        },
+                        {
+                          "name": "VMs Affected Count",
+                          "value": "@{outputs('Create_VM_Count')} VM(s)"
+                        }
+                      ],
+                      "text": "**VM List:**<br>@{outputs('Join_VM_Names')}<br><br>This is an automated notification for on-demand patching from Azure Update Manager"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "outputs": {},
+          "parameters": {
+            "$connections": {
+              "type": "Object",
+              "defaultValue": {}
+            }
+          }
+        },
+        "parameters": {
+          "$connections": {
+            "value": {
+              "teams": {
+                "id": "[subscriptionResourceId('Microsoft.Web/locations/managedApis', variables('location'), 'teams')]",
+                "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                "connectionName": "teams"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "preMaintenanceLogicAppId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', concat('az', variables('regionCode'), '-logicapp-premaintenance'))]"
+    },
+    "postMaintenanceLogicAppId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', concat('az', variables('regionCode'), '-logicapp-postmaintenance'))]"
+    },
+    "maintenanceMonitorLogicAppId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', concat('az', variables('regionCode'), '-logicapp-maintenance-monitor'))]"
+    },
+    "schedulerLogicAppId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', concat('az', variables('regionCode'), '-logicapp-scheduler'))]"
+    },
+    "onDemandPreMaintenanceLogicAppId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.Logic/workflows', concat('az', variables('regionCode'), '-ondemand-logicapp-premaintenance'))]"
+    }
+  }
+}
