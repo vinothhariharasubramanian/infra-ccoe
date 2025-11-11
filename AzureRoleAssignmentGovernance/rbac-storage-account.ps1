@@ -17,6 +17,7 @@ $ResourceGroup = "azsu-ccoe-sandbox-rg"
 $storageAcc = Get-AzStorageAccount -ResourceGroupName $ResourceGroup -Name $StorageAccount
 $ctx = New-AzStorageContext -StorageAccountName $StorageAccount
 
+
 # Test 1: List containers
 Write-Output "`n=== Test 1: List containers ==="
 try {

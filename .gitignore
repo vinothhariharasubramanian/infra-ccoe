@@ -17,6 +17,7 @@ DevOpsRole/terraform/*.tfvars.json
 
 # Exclude In progress GenAI working directory
 GenAI-StreamlitApp/
+GenAI/
 
 
 # Exclude Modularize-IaaC working directory
@@ -49,3 +50,6 @@ terraform*.tfvars
 *.auto.tfvars.json
 crash.log
 crash.*.log
+ 
+# AzureRoleAssignmentGovernance
+Archive/
