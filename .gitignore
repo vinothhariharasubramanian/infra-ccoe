@@ -18,6 +18,7 @@ DevOpsRole/terraform/*.tfvars.json
 # Exclude In progress GenAI working directory
 GenAI-StreamlitApp/
 GenAI/
+StrandsAgent/
 
 
 # Exclude Modularize-IaaC working directory
