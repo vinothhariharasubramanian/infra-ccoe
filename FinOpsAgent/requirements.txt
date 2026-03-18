@@ -1,0 +1,6 @@
+boto3
+strands-agents
+strands-agents-tools
+pytest
+pytest-cov
+moto[dynamodb]
